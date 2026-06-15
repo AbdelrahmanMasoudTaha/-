@@ -37,8 +37,9 @@ class AudioLooperApp:
         self.audio_duration_ms = 0  # Total duration in milliseconds
         
         # Loop Points (in milliseconds)
-        self.start_ms = 0
-        self.end_ms = 0
+        self.start_ms = 0 # Tracks the bounds of the active interval for the monitor
+        self.end_ms = 0   
+        self.marks = [] # Stores all user-defined timestamp marks (ms)
         # internal debounce to avoid immediate re-trigger after restarting loop
         self._last_loop_restart = 0.0
         # track mouse position for context menu
@@ -73,14 +74,6 @@ class AudioLooperApp:
         # Top bar of timeline: Readouts and Row selector combined
         top_bar = ttk.Frame(timeline_frame, padding=5)
         top_bar.pack(fill=X)
-        
-        ttk.Label(top_bar, text="Loop START:").pack(side=LEFT)
-        self.lbl_start_time = ttk.Label(top_bar, text="00:00:00", font=("Helvetica", 9, "bold"), foreground="#00c853")
-        self.lbl_start_time.pack(side=LEFT, padx=(6, 20))
-        
-        ttk.Label(top_bar, text="Loop END:").pack(side=LEFT)
-        self.lbl_end_time = ttk.Label(top_bar, text="00:00:00", font=("Helvetica", 9, "bold"), foreground="#ff5252")
-        self.lbl_end_time.pack(side=LEFT, padx=6)
 
         # Right-aligned Row selector
         self.combo_rows = ttk.Combobox(top_bar, values=[1, 2, 3, 4, 5, 7, 10, 15, 20], width=5, state="readonly")
@@ -101,9 +94,12 @@ class AudioLooperApp:
         self.combo_rows.bind("<<ComboboxSelected>>", lambda e: self.draw_timeline())
 
         # Context menu for right-click functionality
+        # Updated context menu for defining multiple loops
         self.context_menu = tk.Menu(self.root, tearoff=0)
-        self.context_menu.add_command(label="Set Start Here", command=self._set_start_at_click)
-        self.context_menu.add_command(label="Set End Here", command=self._set_end_at_click)
+        self.context_menu.add_command(label="Add Mark Here", command=self._add_mark_at_click)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Clear All Marks", command=self._clear_all_marks)
+        self.context_menu.add_command(label="Delete Nearest Mark", command=self._delete_nearest_mark)
         self.timeline_canvas.bind('<Button-3>', self._show_context_menu)
         self.timeline_canvas.bind('<Button-1>', self._on_timeline_click)
 
@@ -115,18 +111,10 @@ class AudioLooperApp:
         self._pixels_per_second = 4.5
         self._dragging_tag = None
 
-        # Bindings for marker interaction
-        self.timeline_canvas.tag_bind('start_marker', '<ButtonPress-1>', lambda e: self._on_marker_press(e, 'start'))
-        self.timeline_canvas.tag_bind('end_marker', '<ButtonPress-1>', lambda e: self._on_marker_press(e, 'end'))
-        self.timeline_canvas.bind('<B1-Motion>', self._on_marker_drag)
-        self.timeline_canvas.bind('<ButtonRelease-1>', self._on_marker_release)
-
         # Keyboard shortcuts
         self.root.bind('<space>', self.toggle_pause)
-        self.root.bind('<Control-s>', self._handle_mark_start)
-        self.root.bind('<Control-S>', self._handle_mark_start)
-        self.root.bind('<Control-e>', self._handle_mark_end)
-        self.root.bind('<Control-E>', self._handle_mark_end)
+        self.root.bind('<Control-m>', lambda e: self._add_mark_at_current_pos())
+        self.root.bind('<Control-M>', lambda e: self._add_mark_at_current_pos())
         self.root.bind('<Up>', self._handle_volume_up)
         self.root.bind('<Down>', self._handle_volume_down)
         self.root.bind('<Left>', lambda e: self._seek(-5000))
@@ -143,6 +131,9 @@ class AudioLooperApp:
 
         self.btn_restart = ttk.Button(control_frame, text="↺ Restart Loop", bootstyle=SUCCESS, width=15, command=self.play_loop, state=DISABLED)
         self.btn_restart.pack(side=LEFT, padx=(0, 10))
+
+        self.btn_add_mark = ttk.Button(control_frame, text="+ Add Mark", bootstyle=INFO, width=12, command=self._add_mark_at_current_pos, state=DISABLED)
+        self.btn_add_mark.pack(side=LEFT, padx=(0, 10))
 
         # Radio buttons for global looping control
         self.chk_loop_between_marks = ttk.Checkbutton(control_frame, text="Loop Between Marks", variable=self.is_looping_enabled, command=self._update_status_label_on_loop_toggle, bootstyle="round-toggle")
@@ -184,47 +175,24 @@ class AudioLooperApp:
                 # Load sound data to determine length
                 sound = pygame.mixer.Sound(self.audio_path)
                 self.audio_duration_ms = int(sound.get_length() * 1000)
-                # Set default loop to full file
+                
+                # Reset states
                 self.start_ms = 0
                 self.end_ms = self.audio_duration_ms
-                # show duration in filename label for quick verification
+                self.marks = []
                 self.lbl_file_name.config(text=f"{os.path.basename(path)} — {self.ms_to_hhmmss(self.audio_duration_ms)}")
-
-                # Update text readouts (hh:MM:SS)
-                self._update_time_readouts()
 
                 # Draw timeline (which now handles markers internally)
                 self.draw_timeline()
 
                 # Enable playback
                 self.btn_restart.config(state=NORMAL)
+                self.btn_add_mark.config(state=NORMAL)
                 self.btn_pause.config(state=NORMAL)
                 self.stop_audio()
                 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load audio file:\n{str(e)}")
-
-    def on_start_slider_move(self, val):
-        """Handles user adjusting the Loop Start slider."""
-        self.start_ms = int(float(val))
-        self.lbl_start_time.config(text=f"{(self.start_ms / 1000):.2f}s")
-        
-        # Safety constraint: Prevent start point from surpassing end point
-        if self.start_ms >= self.end_ms:
-            self.end_ms = min(self.start_ms + 100, self.audio_duration_ms)
-            self.slider_end.set(self.end_ms)
-            self.lbl_end_time.config(text=f"{(self.end_ms / 1000):.2f}s")
-
-    def on_end_slider_move(self, val):
-        """Handles user adjusting the Loop End slider."""
-        self.end_ms = int(float(val))
-        self.lbl_end_time.config(text=f"{(self.end_ms / 1000):.2f}s")
-        
-        # Safety constraint: Prevent end point from falling behind start point
-        if self.end_ms <= self.start_ms:
-            self.start_ms = max(0, self.end_ms - 100)
-            self.slider_start.set(self.start_ms)
-            self.lbl_start_time.config(text=f"{(self.start_ms / 1000):.2f}s")
 
     # --- New timeline helpers (canvas-based) ---
     def ms_to_hhmmss(self, ms: int) -> str:
@@ -235,8 +203,7 @@ class AudioLooperApp:
         return f"{h:02d}:{m:02d}:{s:02d}"
 
     def _update_time_readouts(self):
-        self.lbl_start_time.config(text=self.ms_to_hhmmss(self.start_ms))
-        self.lbl_end_time.config(text=self.ms_to_hhmmss(self.end_ms))
+        pass # No longer needed for specific top-bar labels
 
     def draw_timeline(self):
         """Draw stacked rows, each up to self._row_seconds seconds."""
@@ -304,6 +271,7 @@ class AudioLooperApp:
         return x, y
 
     def _canvas_to_time_ms(self, x, y):
+        """Converts canvas (x, y) coordinates to a millisecond timestamp."""
         canvas_w = max(400, self.timeline_canvas.winfo_width() or 400)
         left = self._canvas_left_margin
         right = canvas_w - self._canvas_right_margin
@@ -315,23 +283,51 @@ class AudioLooperApp:
         return ms
 
     def _draw_markers(self):
-        self.timeline_canvas.delete('start_marker')
-        self.timeline_canvas.delete('end_marker')
+        """Draws all defined loop intervals, the active loop markers, and the pending start marker."""
+        self.timeline_canvas.delete('marks_visual') # Delete previous visuals
         if self.audio_duration_ms <= 0:
             return
 
-        sx, sy = self._time_to_canvas(self.start_ms)
-        ex, ey = self._time_to_canvas(self.end_ms)
-        
         row_h = self._row_height
-        
-        # Start Marker (Green Line + Pointer)
-        self.timeline_canvas.create_line(sx, sy - row_h//2, sx, sy + row_h//2, fill='#00c853', width=2, tags=('start_marker',))
-        self.timeline_canvas.create_polygon(sx-6, sy-row_h//2, sx+6, sy-row_h//2, sx, sy-row_h//2+8, fill='#00c853', tags=('start_marker',))
+        canvas_w = max(400, self.timeline_canvas.winfo_width() or 400)
+        left_margin = self._canvas_left_margin
+        right_margin = canvas_w - self._canvas_right_margin
 
-        # End Marker (Red Line + Pointer)
-        self.timeline_canvas.create_line(ex, ey - row_h//2, ex, ey + row_h//2, fill='#ff5252', width=2, tags=('end_marker',))
-        self.timeline_canvas.create_polygon(ex-6, ey-row_h//2, ex+6, ey-row_h//2, ex, ey-row_h//2+8, fill='#ff5252', tags=('end_marker',))
+        # Draw all defined marks as grey lines
+        for m_ms in self.marks:
+            mx, my = self._time_to_canvas(m_ms)
+            # Draw mark line
+            self.timeline_canvas.create_line(mx, my - row_h//2, mx, my + row_h//2, fill='#888888', width=2, tags=('marks_visual',))
+
+        # Draw the currently active loop markers (self.start_ms, self.end_ms)
+        # These are the ones that will be used for actual looping and are more prominent.
+        # Only draw if a valid active loop exists and it's not the full file duration (default)
+        if self.start_ms < self.end_ms and (self.start_ms != 0 or self.end_ms != self.audio_duration_ms):
+            sx, sy = self._time_to_canvas(self.start_ms)
+            ex, ey = self._time_to_canvas(self.end_ms)
+            
+            # Draw a semi-transparent rectangle for the active loop
+            current_s_ms = self.start_ms
+            while current_s_ms < self.end_ms:
+                rect_sx, rect_sy = self._time_to_canvas(current_s_ms)
+                
+                row_start_ms = int(rect_sy / row_h) * self._row_seconds * 1000
+                row_end_ms = row_start_ms + (self._row_seconds * 1000)
+                
+                rect_end_ms_for_row = min(self.end_ms, row_end_ms)
+                rect_ex, rect_ey = self._time_to_canvas(rect_end_ms_for_row)
+
+                draw_sx = max(left_margin, rect_sx)
+                draw_ex = min(right_margin, rect_ex)
+                
+                if draw_ex > draw_sx:
+                    self.timeline_canvas.create_rectangle(draw_sx, rect_sy - row_h//2, draw_ex, rect_sy + row_h//2,
+                                                        fill='#2a2a4a', outline='', 
+                                                        tags='marks_visual')
+
+                current_s_ms = row_end_ms
+                if current_s_ms <= self.start_ms: # Safeguard against infinite loop if row_end_ms doesn't advance
+                    current_s_ms = self.start_ms + 1 # Small increment to ensure progress
 
     def _update_playhead(self):
         """Draws a vertical line at the current playback position."""
@@ -353,23 +349,72 @@ class AudioLooperApp:
         self.timeline_canvas.create_line(px, py - row_h//2, px, py + row_h//2, fill='#ffeb3b', width=2, tags='playhead')
 
     def _on_marker_press(self, event, which):
-        self._dragging_tag = which
+        pass
 
     def _on_marker_drag(self, event):
-        if not self._dragging_tag:
-            return
-        canvas_x = self.timeline_canvas.canvasx(event.x)
-        canvas_y = self.timeline_canvas.canvasy(event.y)
-        new_ms = self._canvas_to_time_ms(canvas_x, canvas_y)
-        if self._dragging_tag == 'start':
-            self.start_ms = min(new_ms, max(0, self.end_ms - 100))
-        else:
-            self.end_ms = max(new_ms, min(self.audio_duration_ms, self.start_ms + 100))
-        self._update_time_readouts()
-        self._draw_markers()
+        pass
 
-    def _on_marker_release(self, event):
-        self._dragging_tag = None
+    def _get_loop_interval_at_ms(self, ms: int):
+        """
+        Finds the loop interval surrounding the given millisecond position.
+        Includes the file start (0ms) and end (audio_duration_ms) as implicit marks.
+        """
+        if self.audio_duration_ms <= 0:
+            return None
+            
+        # Build a sorted list of all marks, treating start and end as marks
+        # set() is used to avoid duplicates if user placed a mark at exactly 0 or end
+        effective_marks = sorted(list(set([0] + self.marks + [self.audio_duration_ms])))
+        
+        if len(effective_marks) < 2:
+            return None
+            
+        for i in range(len(effective_marks) - 1):
+            if effective_marks[i] <= ms < effective_marks[i+1]:
+                return (effective_marks[i], effective_marks[i+1])
+        
+        # Handle case where playback is exactly at or past the end
+        if ms >= self.audio_duration_ms:
+            return (effective_marks[-2], effective_marks[-1])
+
+        return None
+
+    def _add_mark_at_click(self):
+        """Adds a mark at the context menu click position."""
+        ms = self._canvas_to_time_ms(*self._menu_click_pos)
+        self._add_mark(ms)
+
+    def _add_mark_at_current_pos(self):
+        """Adds a mark at the current playback position."""
+        if not self.audio_path: return
+        ms = self._get_current_pos_ms()
+        self._add_mark(ms)
+
+    def _add_mark(self, ms):
+        """Internal logic to add a mark and sort the list."""
+        if ms not in self.marks:
+            self.marks.append(ms)
+            self.marks.sort()
+            self.lbl_status.config(text=f"Status: Mark added at {self.ms_to_hhmmss(ms)}")
+            self.draw_timeline()
+
+    def _delete_nearest_mark(self):
+        """Deletes the mark closest to the right-click position."""
+        ms = self._canvas_to_time_ms(*self._menu_click_pos)
+        if not self.marks: return
+        
+        # Find the mark with the smallest delta to click position
+        closest = min(self.marks, key=lambda x: abs(x - ms))
+        if abs(closest - ms) < 2000: # Only delete if within 2 seconds of click
+            self.marks.remove(closest)
+            self.lbl_status.config(text=f"Status: Mark at {self.ms_to_hhmmss(closest)} deleted.")
+            self.draw_timeline()
+
+    def _clear_all_marks(self):
+        """Clears all user-defined marks."""
+        self.marks = []
+        self.lbl_status.config(text="Status: All marks cleared.")
+        self.draw_timeline()
 
     def _on_timeline_click(self, event):
         """Jumps playback to the clicked position unless a marker is being clicked."""
@@ -379,21 +424,26 @@ class AudioLooperApp:
         cx = self.timeline_canvas.canvasx(event.x)
         cy = self.timeline_canvas.canvasy(event.y)
         new_ms = self._canvas_to_time_ms(cx, cy)
-        
-        # Update status label based on global looping setting
-        if self.is_looping_enabled.get():
-            self.lbl_status.config(text=f"Status: Playing (Loop ON) from {self.ms_to_hhmmss(new_ms)}")
+
+        # Determine the active loop interval based on click position
+        active_loop = self._get_loop_interval_at_ms(new_ms)
+        if active_loop and self.is_looping_enabled.get():
+            self.start_ms, self.end_ms = active_loop
+            self.lbl_status.config(text=f"Status: Playing (Loop ON) from {self.ms_to_hhmmss(new_ms)} within {self.ms_to_hhmmss(self.start_ms)} 🔁 {self.ms_to_hhmmss(self.end_ms)}")
         else:
+            # If no active loop or looping is off, play normally
+            self.start_ms = 0 # Reset active loop markers for normal playback
+            self.end_ms = self.audio_duration_ms
             self.lbl_status.config(text=f"Status: Playing (Loop OFF) from {self.ms_to_hhmmss(new_ms)}")
             
-        # Load (if not already) and restart playback at the clicked absolute position
         pygame.mixer.music.load(self.audio_path)
         pygame.mixer.music.play(loops=0, start=new_ms/1000.0)
         self.play_offset_ms = new_ms
         self.is_playing = True
         self.is_paused = False
         self.btn_pause.config(text="⏸ Pause", bootstyle=WARNING)
-        self._last_loop_restart = time.time()
+        self._update_time_readouts() # Update labels for start/end
+        self.draw_timeline() # Redraw markers
 
     def _show_context_menu(self, event):
         if not self.audio_path:
@@ -404,43 +454,12 @@ class AudioLooperApp:
         self._menu_click_pos = (cx, cy)
         self.context_menu.post(event.x_root, event.y_root)
 
-    def _set_start_at_click(self):
-        new_ms = self._canvas_to_time_ms(*self._menu_click_pos)
-        # If the new start point is at or after the current end, reset end to the file's duration
-        if new_ms >= self.end_ms:
-            self.end_ms = self.audio_duration_ms
-        self.start_ms = min(new_ms, max(0, self.end_ms - 100))
-        self._update_time_readouts()
-        self._draw_markers()
-
-    def _set_end_at_click(self):
-        new_ms = self._canvas_to_time_ms(*self._menu_click_pos)
-        self.end_ms = max(new_ms, min(self.audio_duration_ms, self.start_ms + 100))
-        self._update_time_readouts()
-        self._draw_markers()
-
     def _get_current_pos_ms(self):
         """Helper to get absolute playback position in ms."""
         if not self.is_playing:
             return self.start_ms
         pos = pygame.mixer.music.get_pos()
         return self.play_offset_ms + (pos if pos != -1 else 0)
-
-    def _handle_mark_start(self, event=None):
-        if not self.audio_path: return
-        curr = self._get_current_pos_ms()
-        if curr >= self.end_ms:
-            self.end_ms = self.audio_duration_ms
-        self.start_ms = min(curr, max(0, self.end_ms - 100))
-        self._update_time_readouts()
-        self._draw_markers()
-
-    def _handle_mark_end(self, event=None):
-        if not self.audio_path: return
-        curr = self._get_current_pos_ms()
-        self.end_ms = max(curr, min(self.audio_duration_ms, self.start_ms + 100))
-        self._update_time_readouts()
-        self._draw_markers()
 
     def _handle_volume_up(self, event=None):
         new_v = min(1.0, self.volume_var.get() + 0.05)
@@ -484,21 +503,51 @@ class AudioLooperApp:
 
     def play_loop(self):
         """Loads and starts audio precisely at the defined starting millisecond."""
+        if not self.audio_path: return
+
+        play_from_ms = self.start_ms # Default to current start_ms (which might be 0)
+        loop_end_ms = self.end_ms # Default to current end_ms (which might be audio_duration_ms)
+
+        if self.is_looping_enabled.get():
+            # When play_loop is called (e.g., by Restart Loop button or monitor_playback),
+            # we need to find the active loop based on the current playback position.
+            current_pos = self._get_current_pos_ms()
+            active_loop = self._get_loop_interval_at_ms(current_pos)
+            
+            if active_loop:
+                play_from_ms, loop_end_ms = active_loop
+                # Ensure we start from the beginning of the active loop
+                self.start_ms = play_from_ms
+                self.end_ms = loop_end_ms
+                self.lbl_status.config(text=f"Status: Looping ({ self.ms_to_hhmmss(self.start_ms)} 🔁 {self.ms_to_hhmmss(self.end_ms)})")
+            else:
+                # If looping is enabled but current position is not in a defined loop,
+                # play normally from current position.
+                self.start_ms = 0 # Reset active loop markers for normal playback
+                self.end_ms = self.audio_duration_ms
+                play_from_ms = current_pos # Start from current position
+                loop_end_ms = self.audio_duration_ms
+                self.lbl_status.config(text=f"Status: Playing (Loop ON, no active interval) from {self.ms_to_hhmmss(play_from_ms)}")
+        else:
+            # Looping is OFF, play normally from current start_ms (which might be 0)
+            self.start_ms = 0 # Reset active loop markers for normal playback
+            self.end_ms = self.audio_duration_ms
+            play_from_ms = self._get_current_pos_ms() # Start from current position
+            loop_end_ms = self.audio_duration_ms
+            self.lbl_status.config(text=f"Status: Playing (Loop OFF) from {self.ms_to_hhmmss(play_from_ms)}")
+
         pygame.mixer.music.load(self.audio_path)
         # play() takes loops (-1 for infinite loop logic handled by our monitor), and start time in seconds
-        pygame.mixer.music.play(loops=0, start=(self.start_ms / 1000.0))
-        self.play_offset_ms = self.start_ms
+        pygame.mixer.music.play(loops=0, start=(play_from_ms / 1000.0))
+        self.play_offset_ms = play_from_ms
         
-        # record restart time to debounce immediate retriggers
-        self._last_loop_restart = time.time()
+        self._last_loop_restart = time.time() # record restart time to debounce
         self.is_playing = True
         self.is_paused = False
         
         self.btn_pause.config(text="⏸ Pause", bootstyle=WARNING)
-        if self.is_looping_enabled.get():
-            self.lbl_status.config(text=f"Status: Looping ({ self.ms_to_hhmmss(self.start_ms)} 🔁 {self.ms_to_hhmmss(self.end_ms)})")
-        else:
-            self.lbl_status.config(text=f"Status: Playing (Loop OFF) from {self.ms_to_hhmmss(self.start_ms)}")
+        self._update_time_readouts()
+        # Removed draw_timeline() here to prevent unnecessary expensive redraws during looping
 
     def toggle_pause(self, event=None):
         """Toggles the pause state without resetting the playhead. Accepts optional event for spacebar binding."""
@@ -530,29 +579,51 @@ class AudioLooperApp:
 
     def monitor_playback(self):
         """Runs continuously in the background to enforce the loop end marker."""
-        if self.is_playing and not self.is_paused:
+        if not self.is_playing or self.is_paused:
+            self.root.after(15, self.monitor_playback)
+            return
+
+        try:
             # pygame.mixer.music.get_pos() returns elapsed ms *since play() was called*
             elapsed = pygame.mixer.music.get_pos()
+            current_abs_ms = self.play_offset_ms + (elapsed if elapsed != -1 else 0)
 
-            # If get_pos() returns -1 the music stopped
-            if elapsed == -1: # Music stopped (reached end of file or was stopped externally)
-                if self.is_looping_enabled.get(): # Only restart if global looping is ON
-                    # small debounce to avoid rapid reloading
-                    if time.time() - self._last_loop_restart > 0.02:
-                        self.play_loop()
-                else:
-                    # If looping is disabled, stop the state naturally at the end of the file
+            # Store previous active loop boundaries to detect changes for redrawing
+            prev_start_ms = self.start_ms
+            prev_end_ms = self.end_ms
+
+            # Determine the current active loop based on playback position
+            active_loop_at_current_pos = self._get_loop_interval_at_ms(current_abs_ms)
+            
+            if self.is_looping_enabled.get() and active_loop_at_current_pos:
+                # Looping is ON and we are inside a defined loop interval
+                loop_start, loop_end = active_loop_at_current_pos
+                self.start_ms = loop_start # Update for UI and _update_playhead
+                self.end_ms = loop_end     # Update for UI and _update_playhead
+
+                # Check if we've reached the end of the current active loop
+                # Using a larger debounce (200ms) to prevent UI hanging on very short loops
+                if (elapsed == -1 or current_abs_ms >= (self.end_ms - 30)):
+                    if time.time() - self._last_loop_restart > 0.2:
+                        self.play_loop() # This will restart from loop_start
+            else:
+                # Either looping is OFF, or looping is ON but we are outside any defined loop interval
+                # In both cases, play normally until the end of the file.
+                self.start_ms = 0 # Reset active loop markers for normal playback for UI
+                self.end_ms = self.audio_duration_ms # Reset active loop markers for normal playback for UI
+                
+                if elapsed == -1: # Music stopped naturally (reached end of file)
                     self.stop_audio()
-            else: # Music is still playing
-                current_abs_ms = self.play_offset_ms + elapsed
-                # trigger loop restart only if global looping is ON and we hit the end marker
-                if self.is_looping_enabled.get() and current_abs_ms >= (self.end_ms - 20):
-                    # avoid immediate retrigger due to timing granularity
-                    if time.time() - self._last_loop_restart > 0.02:
-                        self.play_loop()
+                # No need for an `else` here, as if elapsed != -1, music is still playing normally.
             
             # Update playhead position visually
             self._update_playhead()
+
+            # Only redraw timeline (to update active loop highlight) if the active loop boundaries changed
+            if prev_start_ms != self.start_ms or prev_end_ms != self.end_ms:
+                self.draw_timeline()
+        except Exception as e:
+            print(f"Monitor error: {e}")
                     
         # Check again in 15 milliseconds for near-gapless looping performance
         self.root.after(15, self.monitor_playback)
