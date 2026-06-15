@@ -31,7 +31,8 @@ class AudioLooperApp:
         # Audio State Variables
         self.audio_path = None
         self.is_playing = False
-        self.is_paused = False
+        self.is_paused = False        
+        self.is_looping_enabled = tk.BooleanVar(value=True) # Controls global looping state
         self.play_offset_ms = 0 # tracks the timestamp where playback last started
         self.audio_duration_ms = 0  # Total duration in milliseconds
         
@@ -143,10 +144,16 @@ class AudioLooperApp:
         self.btn_restart = ttk.Button(control_frame, text="↺ Restart Loop", bootstyle=SUCCESS, width=15, command=self.play_loop, state=DISABLED)
         self.btn_restart.pack(side=LEFT, padx=(0, 10))
 
+        # Radio buttons for global looping control
+        self.chk_loop_between_marks = ttk.Checkbutton(control_frame, text="Loop Between Marks", variable=self.is_looping_enabled, command=self._update_status_label_on_loop_toggle, bootstyle="round-toggle")
+        self.chk_loop_between_marks.pack(side=LEFT, padx=(0, 10))
+
+
         self.btn_pause = ttk.Button(control_frame, text="▶ Start", bootstyle=SUCCESS, width=12, command=self.toggle_pause, state=DISABLED)
         self.btn_pause.pack(side=LEFT, padx=(0, 10))
 
         self.lbl_status = ttk.Label(control_frame, text="Status: Stopped", font=("Helvetica", 10))
+        self._update_status_label_on_loop_toggle()
         self.lbl_status.pack(side=LEFT, padx=10)
 
         # Volume Control
@@ -333,8 +340,12 @@ class AudioLooperApp:
             return
 
         current_ms = self._get_current_pos_ms()
-        # Clamp playhead to end_ms for visual consistency
-        current_ms = min(current_ms, self.end_ms)
+        if self.is_looping_enabled.get():
+            # Clamp playhead to end_ms for visual consistency during loop
+            current_ms = min(current_ms, self.end_ms)
+        else:
+            # Otherwise clamp to total duration
+            current_ms = min(current_ms, self.audio_duration_ms)
         
         px, py = self._time_to_canvas(current_ms)
         row_h = self._row_height
@@ -369,6 +380,12 @@ class AudioLooperApp:
         cy = self.timeline_canvas.canvasy(event.y)
         new_ms = self._canvas_to_time_ms(cx, cy)
         
+        # Update status label based on global looping setting
+        if self.is_looping_enabled.get():
+            self.lbl_status.config(text=f"Status: Playing (Loop ON) from {self.ms_to_hhmmss(new_ms)}")
+        else:
+            self.lbl_status.config(text=f"Status: Playing (Loop OFF) from {self.ms_to_hhmmss(new_ms)}")
+            
         # Load (if not already) and restart playback at the clicked absolute position
         pygame.mixer.music.load(self.audio_path)
         pygame.mixer.music.play(loops=0, start=new_ms/1000.0)
@@ -478,7 +495,10 @@ class AudioLooperApp:
         self.is_paused = False
         
         self.btn_pause.config(text="⏸ Pause", bootstyle=WARNING)
-        self.lbl_status.config(text=f"Status: Looping ({ (self.start_ms/1000):.1f}s 🔁 {(self.end_ms/1000):.1f}s)")
+        if self.is_looping_enabled.get():
+            self.lbl_status.config(text=f"Status: Looping ({ self.ms_to_hhmmss(self.start_ms)} 🔁 {self.ms_to_hhmmss(self.end_ms)})")
+        else:
+            self.lbl_status.config(text=f"Status: Playing (Loop OFF) from {self.ms_to_hhmmss(self.start_ms)}")
 
     def toggle_pause(self, event=None):
         """Toggles the pause state without resetting the playhead. Accepts optional event for spacebar binding."""
@@ -514,15 +534,19 @@ class AudioLooperApp:
             # pygame.mixer.music.get_pos() returns elapsed ms *since play() was called*
             elapsed = pygame.mixer.music.get_pos()
 
-            # If get_pos() returns -1 the music stopped; restart if within loop
-            if elapsed == -1:
-                # small debounce to avoid rapid reloading
-                if time.time() - self._last_loop_restart > 0.02:
-                    self.play_loop()
-            else:
+            # If get_pos() returns -1 the music stopped
+            if elapsed == -1: # Music stopped (reached end of file or was stopped externally)
+                if self.is_looping_enabled.get(): # Only restart if global looping is ON
+                    # small debounce to avoid rapid reloading
+                    if time.time() - self._last_loop_restart > 0.02:
+                        self.play_loop()
+                else:
+                    # If looping is disabled, stop the state naturally at the end of the file
+                    self.stop_audio()
+            else: # Music is still playing
                 current_abs_ms = self.play_offset_ms + elapsed
-                # trigger when absolute position >= loop end (minus small epsilon)
-                if current_abs_ms >= (self.end_ms - 20):
+                # trigger loop restart only if global looping is ON and we hit the end marker
+                if self.is_looping_enabled.get() and current_abs_ms >= (self.end_ms - 20):
                     # avoid immediate retrigger due to timing granularity
                     if time.time() - self._last_loop_restart > 0.02:
                         self.play_loop()
@@ -532,6 +556,14 @@ class AudioLooperApp:
                     
         # Check again in 15 milliseconds for near-gapless looping performance
         self.root.after(15, self.monitor_playback)
+
+    def _update_status_label_on_loop_toggle(self):
+        """Updates the status label to reflect the global looping state if no audio is playing."""
+        if not self.is_playing:
+            if self.is_looping_enabled.get():
+                self.lbl_status.config(text="Status: Looping ON (Global)")
+            else:
+                self.lbl_status.config(text="Status: Looping OFF (Global)")
 
 # Window initialization
 if __name__ == "__main__":
