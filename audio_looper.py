@@ -7,6 +7,10 @@ import math
 import time
 import pygame
 
+# Hello there, This Abdelrhman Masoud @7/15/2026
+# I made this app to help me recite and memorize the Holy Quran. 
+# If you need to change any thing for yourself or for athers you are free 
+
 class AudioLooperApp:
     def __init__(self, root):
         self.root = root
