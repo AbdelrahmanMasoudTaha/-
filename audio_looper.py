@@ -7,6 +7,7 @@ import math
 import time
 import pygame
 
+
 # Hello there, This Abdelrhman Masoud @7/15/2026
 # I made this app to help me recite and memorize the Holy Quran. 
 # If you need to change any thing for yourself or for athers you are free 
@@ -26,13 +27,13 @@ class AudioLooperApp:
 
         # Initialize Pygame Mixer for high-quality audio handling
         pygame.mixer.init()
-        pygame.mixer.music.set_volume(0.7)
+        pygame.mixer.music.set_volume(0.3)
         
         # Audio State Variables
         self.audio_path = None
         self.is_playing = False
         self.is_paused = False        
-        self.is_looping_enabled = tk.BooleanVar(value=True) # Controls global looping state
+        self.is_looping_enabled = tk.BooleanVar(value=False) # Controls global looping state
         self.play_offset_ms = 0 # tracks the timestamp where playback last started
         self.audio_duration_ms = 0  # Total duration in milliseconds
         
@@ -143,6 +144,8 @@ class AudioLooperApp:
         self.chk_loop_between_marks = ttk.Checkbutton(control_frame, text="Loop Between Marks", variable=self.is_looping_enabled, command=self.draw_timeline, bootstyle="round-toggle")
         self.chk_loop_between_marks.pack(side=LEFT, padx=(0, 10))
 
+
+
         self.btn_pause = ttk.Button(control_frame, text="▶ Start", bootstyle=SUCCESS, width=12, command=self.toggle_pause, state=DISABLED)
         self.btn_pause.pack(side=LEFT, padx=(0, 10))
 
@@ -151,12 +154,12 @@ class AudioLooperApp:
         volume_frame.pack(side=RIGHT, padx=10)
         ttk.Label(volume_frame, text="Volume:").pack(side=LEFT, padx=(0, 5))
         
-        self.volume_var = tk.DoubleVar(value=0.7)
+        self.volume_var = tk.DoubleVar(value=0.3)
         self.slider_volume = ttk.Scale(volume_frame, from_=0.0, to=1.0, variable=self.volume_var, command=self.update_volume, length=120)
         self.slider_volume.pack(side=LEFT, padx=5)
         self.slider_volume.bind("<Button-1>", self._on_volume_click)
         
-        self.lbl_vol_percent = ttk.Label(volume_frame, text="70%", width=4)
+        self.lbl_vol_percent = ttk.Label(volume_frame, text="30%", width=4)
         self.lbl_vol_percent.pack(side=LEFT)
 
     # --- Logic & Audio Event Handlers ---
@@ -190,6 +193,7 @@ class AudioLooperApp:
                 # Enable playback
                 self.btn_restart.config(state=NORMAL)
                 self.btn_add_mark.config(state=NORMAL)
+
                 self.btn_pause.config(state=NORMAL)
                 self.stop_audio()
                 
@@ -303,7 +307,7 @@ class AudioLooperApp:
         for m_ms in self.marks:
             mx, my = self._time_to_canvas(m_ms)
             # Draw mark line
-            self.timeline_canvas.create_line(mx, my - row_h//2, mx, my + row_h//2, fill='#888888', width=2, tags=('marks_visual',))
+            self.timeline_canvas.create_line(mx, my - row_h//2, mx, my + row_h//2, fill='#888888', width=3, tags=('marks_visual',))
 
         # Draw the currently active loop markers (self.start_ms, self.end_ms)
         # These are the ones that will be used for actual looping and are more prominent.
@@ -313,27 +317,37 @@ class AudioLooperApp:
             ex, ey = self._time_to_canvas(self.end_ms)
             
             # Draw a semi-transparent rectangle for the active loop
-            current_s_ms = self.start_ms
-            while current_s_ms < self.end_ms:
-                rect_sx, rect_sy = self._time_to_canvas(current_s_ms)
+            # Iterate through rows starting from start_ms to end_ms
+            curr_ms = self.start_ms
+            while curr_ms < self.end_ms:
+                # Find the row for the current timestamp
+                row = int((curr_ms / 1000.0) // self._row_seconds)
+                row_start_ms = int(row * self._row_seconds * 1000)
+                row_end_ms = int((row + 1) * self._row_seconds * 1000)
                 
-                row_start_ms = int(rect_sy / row_h) * self._row_seconds * 1000
-                row_end_ms = row_start_ms + (self._row_seconds * 1000)
+                # Determine the interval within this row to highlight
+                draw_start_ms = max(curr_ms, row_start_ms)
+                draw_end_ms = min(self.end_ms, row_end_ms)
                 
-                rect_end_ms_for_row = min(self.end_ms, row_end_ms)
-                rect_ex, rect_ey = self._time_to_canvas(rect_end_ms_for_row)
-
-                draw_sx = max(left_margin, rect_sx)
-                draw_ex = min(right_margin, rect_ex)
+                if draw_end_ms > draw_start_ms:
+                    sx, sy = self._time_to_canvas(draw_start_ms)
+                    ex, ey = self._time_to_canvas(draw_end_ms)
+                    
+                    # Ensure coordinates are within canvas margins for the rectangle
+                    draw_sx = max(left_margin, sx)
+                    draw_ex = min(right_margin, ex)
+                    
+                    if draw_ex > draw_sx:
+                        self.timeline_canvas.create_rectangle(
+                            draw_sx, sy - row_h//2, draw_ex, sy + row_h//2,
+                            fill='#2a2a4a', outline='', 
+                            tags='marks_visual'
+                        )
                 
-                if draw_ex > draw_sx:
-                    self.timeline_canvas.create_rectangle(draw_sx, rect_sy - row_h//2, draw_ex, rect_sy + row_h//2,
-                                                        fill='#2a2a4a', outline='', 
-                                                        tags='marks_visual')
-
-                current_s_ms = row_end_ms
-                if current_s_ms <= self.start_ms: # Safeguard against infinite loop if row_end_ms doesn't advance
-                    current_s_ms = self.start_ms + 1 # Small increment to ensure progress
+                # Advance to the start of the next row
+                curr_ms = row_end_ms
+                if curr_ms <= draw_start_ms: # Absolute safeguard
+                    curr_ms = draw_start_ms + 1
 
     def _update_playhead(self):
         """Draws a vertical line at the current playback position."""
@@ -384,7 +398,9 @@ class AudioLooperApp:
         
         # Handle case where playback is exactly at or past the end
         if ms >= self.audio_duration_ms:
-            return (effective_marks[-2], effective_marks[-1])
+            if len(effective_marks) >= 2:
+                return (effective_marks[-2], effective_marks[-1])
+            return (0, self.audio_duration_ms)
 
         return None
 
@@ -611,9 +627,11 @@ class AudioLooperApp:
 
             # Perform looping logic if enabled
             if self.is_looping_enabled.get() and active_loop_at_current_pos:
-                if (elapsed == -1 or current_abs_ms >= (self.end_ms - 30)):
-                    if time.time() - self._last_loop_restart > 0.2:
-                        self.play_loop()
+                # Only loop if the interval is long enough to be useful (at least 100ms)
+                if (self.end_ms - self.start_ms) > 100:
+                    if (elapsed == -1 or current_abs_ms >= (self.end_ms - 30)):
+                        if time.time() - self._last_loop_restart > 0.2:
+                            self.play_loop()
             elif elapsed == -1:
                 # If music stopped naturally and we aren't looping, stop fully
                 self.stop_audio()
@@ -631,3 +649,4 @@ class AudioLooperApp:
                     
         # Relaxed polling interval (30ms) to reduce CPU churn while maintaining smoothness
         self.root.after(30, self.monitor_playback)
+
